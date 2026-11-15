@@ -1,6 +1,6 @@
 # hio-es3000-linux6 — Huawei ES3000 (`hio`) PCIe SSD driver, port to Linux 6.8
 
-**Status: experimental / work in progress. Do not use on a card that holds data you care about.**
+**Status: works on one tested card; not soaked. Keep backups.**
 
 Huawei's out-of-tree block driver `hio` (Tecal ES3000 PCIe SSD) was last maintained for Linux 4.x.
 This repo is an attempt to make it build and run on a modern kernel (target: Ubuntu 22.04 HWE, `6.8.0-*-generic`).
@@ -10,13 +10,15 @@ This repo is an attempt to make it build and run on a modern kernel (target: Ubu
 - Hardware tested: ES3000 v1, 800 GB, PCI id `19e5:0007` (listed as `/* v1 */` in the driver's PCI table).
 - `upstream/` keeps the unmodified base; `linux-6.8-port.patch` is the full diff (`diff -u upstream/hio.c hio.c`).
 
-## What works / does not (as of first commit)
+## What works / does not (2026-11-15, kernel 6.8.0-138-generic)
 | Step | Result |
 |---|---|
 | Builds against `6.8.0-138-generic` (gcc-12) | yes |
 | `insmod hio.ko`, card enumerates as `/dev/hioa` (~803 GB) | yes |
-| Reading blocks (`partition table`, `dd`) | **no** — earlier builds hit `cmd timeout` / `Buffer I/O error` |
-| Latest changes (IOMMU `dma_map_sg`, `bio_split_to_limits`) | not yet verified |
+| ext4 format + mount, direct I/O | yes (reported: ~1.5 GB/s read, ~1.3 GB/s write 1M; 4K QD1 ~6k IOPS) |
+| IOMMU (Intel DMAR) fix: use coalesced `dma_nsegs` from `pci_map_sg` | included |
+| Full reset (`SSD_FULL_RESET_REG` 0x1B0 = 0x5A, protocol V3.1.1+) at load | included; the card may need a PCIe reset / power cycle if left in a bad state by an older build |
+| Survives reboot / long soak | not yet verified |
 
 Writing to a card through an unverified driver can hang the machine. Test read-only first.
 

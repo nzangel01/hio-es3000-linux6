@@ -1,5 +1,5 @@
 --- upstream/hio.c	2026-11-15 15:42:36.081549011 +0700
-+++ hio.c	2026-11-15 15:42:36.040679290 +0700
++++ hio.c	2026-11-15 21:26:25.082214628 +0700
 @@ -60,6 +60,77 @@
  #if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,17))
  #include <linux/devfs_fs_kernel.h>
@@ -352,7 +352,17 @@
  	cpu = part_stat_lock();
  	part = &dev->gd->part0;
  	part_round_stats(cpu, part);
-@@ -6528,6 +6674,14 @@
+@@ -6054,6 +6200,9 @@
+ 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+ 		return 0;
+ 
++	if (atomic_read(&dev->tocnt))
++		return 0;
++
+ 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
+ 		return 0;
+ 	}
+@@ -6528,6 +6677,14 @@
  	}
  }
  
@@ -367,7 +377,7 @@
  static void ssd_bm_routine_start(void *data)
  {
  	struct ssd_device *dev;
-@@ -6536,6 +6690,7 @@
+@@ -6536,6 +6693,7 @@
  		return;
  	}
  	dev = data;
@@ -375,7 +385,47 @@
  
  	if (test_bit(SSD_INIT_WORKQ, &dev->state)) {
  		if (dev->protocol_info.ver < SSD_PROTOCOL_V3_2) {
-@@ -8192,6 +8347,11 @@
+@@ -7751,6 +7909,9 @@
+ 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+ 		return 0;
+ 
++	if (atomic_read(&dev->tocnt))
++		return 0;
++
+ 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
+ 		return 0;
+ 	}
+@@ -7780,6 +7941,9 @@
+ 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+ 		return 0;
+ 
++	if (atomic_read(&dev->tocnt))
++		return 0;
++
+ 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
+ 		return 0;
+ 	}
+@@ -7810,6 +7974,9 @@
+ 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+ 		return 0;
+ 
++	if (atomic_read(&dev->tocnt))
++		return 0;
++
+ 	msg = (struct ssd_nand_op_msg *)ssd_get_dmsg(dev);
+ 
+ 	if (dev->protocol_info.ver < SSD_PROTOCOL_V3) {
+@@ -7841,6 +8008,9 @@
+ 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+ 		return 0;
+ 
++	if (atomic_read(&dev->tocnt))
++		return 0;
++
+ 	msg = (struct ssd_nand_op_msg *)ssd_get_dmsg(dev);
+ 
+ 	if (dev->protocol_info.ver < SSD_PROTOCOL_V3) {
+@@ -8192,6 +8362,11 @@
  #endif
  		goto out;
  	}
@@ -387,7 +437,7 @@
  #else
  	//xx
  	if (unlikely(bio->bi_rw & REQ_FUA)) {
-@@ -8287,6 +8447,16 @@
+@@ -8287,6 +8462,16 @@
  #endif
  		goto out;
  	}
@@ -404,7 +454,7 @@
  #else
  	//xx
  	if (unlikely(bio->bi_rw & REQ_FUA)) {
-@@ -10022,7 +10192,20 @@
+@@ -10022,7 +10207,20 @@
  }
  
  /* block device */
@@ -426,7 +476,7 @@
  static int ssd_block_open(struct inode *inode, struct file *filp)
  {
  	struct ssd_device *dev;
-@@ -10061,7 +10244,20 @@
+@@ -10061,7 +10259,20 @@
  	return 0;
  }
  
@@ -448,7 +498,7 @@
  static int ssd_block_release(struct inode *inode, struct file *filp)
  {
  	struct ssd_device *dev;
-@@ -10112,8 +10308,21 @@
+@@ -10112,8 +10323,21 @@
  #endif
  }
  
@@ -470,7 +520,7 @@
  	.open		= ssd_block_open,
  	.release	= ssd_block_release,
  	.ioctl		= ssd_block_ioctl,
-@@ -10128,17 +10337,21 @@
+@@ -10128,17 +10352,21 @@
  	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
  		return;
  	}
@@ -494,7 +544,7 @@
  	}
  #endif
  }
-@@ -10147,12 +10360,22 @@
+@@ -10147,12 +10375,22 @@
  {
  	ssd_wait_io(dev);
  
@@ -517,7 +567,7 @@
  	dev->rq = blk_alloc_queue(GFP_KERNEL);
  	if (dev->rq == NULL) {
  		hio_warn("%s: alloc queue: failed\n ", dev->name);
-@@ -10161,6 +10384,7 @@
+@@ -10161,6 +10399,7 @@
  
  	/* must be first */
  	blk_queue_make_request(dev->rq, ssd_make_request);
@@ -525,7 +575,7 @@
  
  #if ((LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34)) && !(defined RHEL_MAJOR && RHEL_MAJOR == 6))
  	blk_queue_max_hw_segments(dev->rq, dev->hw_info.cmd_max_sg);
-@@ -10178,8 +10402,11 @@
+@@ -10178,8 +10417,11 @@
  #endif
  	/* not work for make_request based drivers(bio) */
  	blk_queue_max_segment_size(dev->rq, dev->hw_info.sg_max_sec << 9);
@@ -537,7 +587,7 @@
  
  	dev->rq->queuedata = dev;
  
-@@ -10187,7 +10414,10 @@
+@@ -10187,7 +10429,10 @@
  	blk_queue_issue_flush_fn(dev->rq, ssd_issue_flush_fn);
  #endif
  
@@ -549,7 +599,7 @@
  	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, dev->rq);
  #endif
  
-@@ -10206,6 +10436,27 @@
+@@ -10206,6 +10451,27 @@
  
  static int ssd_init_blkdev(struct ssd_device *dev)
  {
@@ -577,7 +627,7 @@
  	if (dev->gd) {
  		put_disk(dev->gd);
  	}
-@@ -10226,6 +10477,7 @@
+@@ -10226,6 +10492,7 @@
  	set_capacity(dev->gd, dev->hw_info.size >> 9);
  
  	add_disk(dev->gd);
@@ -585,7 +635,7 @@
  
  	return 0;
  
-@@ -11411,6 +11663,15 @@
+@@ -11411,6 +11678,15 @@
  		for (i=0; i<dev->nr_queue; i++) {
  			dev->entry[i].entry = i;
  		}
@@ -601,7 +651,7 @@
  		for (;;) {
  			ret = pci_enable_msix(dev->pdev, dev->entry, dev->nr_queue);
  			if (ret == 0) {
-@@ -11424,6 +11685,7 @@
+@@ -11424,6 +11700,7 @@
  				goto out;
  			}
  		}
@@ -609,7 +659,7 @@
  
  #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)) || (defined RHEL_MAJOR && RHEL_MAJOR == 6))
  		mask = (dev_to_node(&dev->pdev->dev) == -1) ? cpu_online_mask : cpumask_of_node(dev_to_node(&dev->pdev->dev));
-@@ -11675,6 +11937,14 @@
+@@ -11675,6 +11952,14 @@
  	}
  }
  
@@ -624,7 +674,7 @@
  static void ssd_routine_start(void *data)
  {
  	struct ssd_device *dev;
-@@ -11683,6 +11953,7 @@
+@@ -11683,6 +11968,7 @@
  		return;
  	}
  	dev = data;
@@ -632,7 +682,7 @@
  
  	dev->routine_tick++;
  
-@@ -11742,11 +12013,19 @@
+@@ -11742,11 +12028,19 @@
  	/* initial log */
  	ssd_initial_log(dev);
  
@@ -652,18 +702,29 @@
  
  	return 0;
  }
-@@ -12011,6 +12290,10 @@
+@@ -11905,6 +12199,10 @@
+ 	}
+ 
+ 	pci_set_master(pdev);
++	if (pdev->bus && pdev->bus->self) {
++		pcie_capability_clear_word(pdev->bus->self, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_ASPMC);
++	}
++	pcie_capability_clear_word(pdev, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_ASPMC);
+ 
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31))
+ 	ret = pci_set_dma_mask(pdev, DMA_64BIT_MASK);
+@@ -12011,6 +12309,10 @@
  	}
  
  init_next1:
-+	if (dev->protocol_info.ver >= SSD_PROTOCOL_V3_2) {
++	if (dev->protocol_info.ver >= SSD_PROTOCOL_V3_1_1) {
 +		ssd_reg32_write(dev->ctrlp + SSD_FULL_RESET_REG, SSD_RESET_FULL);
 +		msleep(1000);
 +	}
  	ret = ssd_init_hw_info(dev);
  	if (ret) {
  		hio_err("%s: init hardware info failed\n", dev->name);
-@@ -12326,6 +12609,8 @@
+@@ -12326,6 +12628,8 @@
  
  #if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,12))
  	ssd_class = class_simple_create(THIS_MODULE, SSD_DEV_NAME);

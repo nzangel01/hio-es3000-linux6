@@ -6200,6 +6200,9 @@ static int ssd_save_smart(struct ssd_device *dev)
 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
 		return 0;
 
+	if (atomic_read(&dev->tocnt))
+		return 0;
+
 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
 		return 0;
 	}
@@ -7906,6 +7909,9 @@ static int ssd_save_md(struct ssd_device *dev)
 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
 		return 0;
 
+	if (atomic_read(&dev->tocnt))
+		return 0;
+
 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
 		return 0;
 	}
@@ -7933,6 +7939,9 @@ static int ssd_barrier_save_md(struct ssd_device *dev)
 	int ret = 0;
 
 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+		return 0;
+
+	if (atomic_read(&dev->tocnt))
 		return 0;
 
 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
@@ -7965,6 +7974,9 @@ static int ssd_flush(struct ssd_device *dev)
 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
 		return 0;
 
+	if (atomic_read(&dev->tocnt))
+		return 0;
+
 	msg = (struct ssd_nand_op_msg *)ssd_get_dmsg(dev);
 
 	if (dev->protocol_info.ver < SSD_PROTOCOL_V3) {
@@ -7994,6 +8006,9 @@ static int ssd_barrier_flush(struct ssd_device *dev)
 	int ret = 0;
 
 	if (unlikely(mode != SSD_DRV_MODE_STANDARD))
+		return 0;
+
+	if (atomic_read(&dev->tocnt))
 		return 0;
 
 	msg = (struct ssd_nand_op_msg *)ssd_get_dmsg(dev);
@@ -12184,6 +12199,10 @@ ssd_init_one(struct pci_dev *pdev,
 	}
 
 	pci_set_master(pdev);
+	if (pdev->bus && pdev->bus->self) {
+		pcie_capability_clear_word(pdev->bus->self, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_ASPMC);
+	}
+	pcie_capability_clear_word(pdev, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_ASPMC);
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31))
 	ret = pci_set_dma_mask(pdev, DMA_64BIT_MASK);
@@ -12290,7 +12309,7 @@ ssd_init_one(struct pci_dev *pdev,
 	}
 
 init_next1:
-	if (dev->protocol_info.ver >= SSD_PROTOCOL_V3_2) {
+	if (dev->protocol_info.ver >= SSD_PROTOCOL_V3_1_1) {
 		ssd_reg32_write(dev->ctrlp + SSD_FULL_RESET_REG, SSD_RESET_FULL);
 		msleep(1000);
 	}
