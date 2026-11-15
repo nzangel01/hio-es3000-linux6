@@ -1,0 +1,674 @@
+--- upstream/hio.c	2026-11-15 15:42:36.081549011 +0700
++++ hio.c	2026-11-15 15:42:36.040679290 +0700
+@@ -60,6 +60,77 @@
+ #if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,17))
+ #include <linux/devfs_fs_kernel.h>
+ #endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0))
++#include <linux/part_stat.h>
++#include <linux/proc_fs.h>
++#include <linux/timekeeping.h>
++
++#ifndef PCI_DMA_BIDIRECTIONAL
++#define PCI_DMA_BIDIRECTIONAL DMA_BIDIRECTIONAL
++#define PCI_DMA_TODEVICE      DMA_TO_DEVICE
++#define PCI_DMA_FROMDEVICE    DMA_FROM_DEVICE
++#define PCI_DMA_NONE          DMA_NONE
++#endif
++
++static inline void *pci_alloc_consistent(struct pci_dev *hwdev, size_t size, dma_addr_t *dma_handle)
++{
++	return dma_alloc_coherent(&hwdev->dev, size, dma_handle, GFP_ATOMIC);
++}
++static inline void pci_free_consistent(struct pci_dev *hwdev, size_t size, void *vaddr, dma_addr_t dma_handle)
++{
++	dma_free_coherent(&hwdev->dev, size, vaddr, dma_handle);
++}
++static inline dma_addr_t pci_map_single(struct pci_dev *hwdev, void *ptr, size_t size, int direction)
++{
++	return dma_map_single(&hwdev->dev, ptr, size, (enum dma_data_direction)direction);
++}
++static inline void pci_unmap_single(struct pci_dev *hwdev, dma_addr_t dma_addr, size_t size, int direction)
++{
++	dma_unmap_single(&hwdev->dev, dma_addr, size, (enum dma_data_direction)direction);
++}
++static inline int pci_map_sg(struct pci_dev *hwdev, struct scatterlist *sg, int nents, int direction)
++{
++	return dma_map_sg(&hwdev->dev, sg, nents, (enum dma_data_direction)direction);
++}
++static inline void pci_unmap_sg(struct pci_dev *hwdev, struct scatterlist *sg, int nents, int direction)
++{
++	dma_unmap_sg(&hwdev->dev, sg, nents, (enum dma_data_direction)direction);
++}
++static inline int pci_set_dma_mask(struct pci_dev *dev, u64 mask)
++{
++	return dma_set_mask(&dev->dev, mask);
++}
++static inline int pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask)
++{
++	return dma_set_coherent_mask(&dev->dev, mask);
++}
++
++struct hio_timeval {
++	time64_t tv_sec;
++	long tv_usec;
++};
++#define timeval hio_timeval
++static inline void do_gettimeofday(struct hio_timeval *tv)
++{
++	struct timespec64 ts;
++	ktime_get_real_ts64(&ts);
++	tv->tv_sec = ts.tv_sec;
++	tv->tv_usec = ts.tv_nsec / 1000;
++}
++
++static inline void hio_bio_endio(struct bio *bio, int error)
++{
++	bio->bi_status = errno_to_blk_status(error);
++	bio_endio(bio);
++}
++#define bio_endio(bio, err) hio_bio_endio(bio, err)
++
++#ifndef BIOVEC_PHYS_MERGEABLE
++#define BIOVEC_PHYS_MERGEABLE(vec1, vec2) \
++	((page_to_phys((vec1)->bv_page) + (vec1)->bv_offset + (vec1)->bv_len) == \
++	 (page_to_phys((vec2)->bv_page) + (vec2)->bv_offset))
++#endif
++#endif
+ 
+ /* driver */
+ #define MODULE_NAME		"hio"
+@@ -1211,6 +1282,7 @@
+ 	struct list_head list;
+ 	void *dev;
+ 	int nsegs;
++	int dma_nents;
+ 	int flag;		/*pbio(1) or bio(0)*/
+ 
+ 	int tag;
+@@ -2244,11 +2316,21 @@
+ {
+ #if (LINUX_VERSION_CODE <= KERNEL_VERSION(3,9,0))
+ 	return single_open(file, ssd_proc_show, PDE(inode)->data);
+-#else
++#elif (LINUX_VERSION_CODE < KERNEL_VERSION(5,17,0))
+ 	return single_open(file, ssd_proc_show, PDE_DATA(inode));
++#else
++	return single_open(file, ssd_proc_show, pde_data(inode));
+ #endif
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0))
++static const struct proc_ops ssd_proc_fops = {
++	.proc_open	= ssd_proc_open,
++	.proc_read	= seq_read,
++	.proc_lseek	= seq_lseek,
++	.proc_release	= single_release,
++};
++#else
+ static const struct file_operations ssd_proc_fops = {
+ 	.open		= ssd_proc_open,
+ 	.read		= seq_read,
+@@ -2256,6 +2338,7 @@
+ 	.release	= single_release,
+ };
+ #endif
++#endif
+ 
+ 
+ static void ssd_cleanup_proc(void)
+@@ -4029,6 +4112,9 @@
+ /* io stat */
+ static void ssd_end_io_acct(struct ssd_cmd *cmd)
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0))
++	bio_end_io_acct(cmd->bio, cmd->start_time);
++#else
+ 	struct ssd_device *dev = cmd->dev;
+ 	struct bio *bio = cmd->bio;
+ 	unsigned long dur = jiffies - cmd->start_time;
+@@ -4065,10 +4151,14 @@
+ 	}
+ 	dev->gd->in_flight = atomic_dec_return(&dev->in_flight[0]);
+ #endif
++#endif
+ }
+ 
+ static void ssd_start_io_acct(struct ssd_cmd *cmd)
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0))
++	cmd->start_time = bio_start_io_acct(cmd->bio);
++#else
+ 	struct ssd_device *dev = cmd->dev;
+ 	struct bio *bio = cmd->bio;
+ 	int rw = bio_data_dir(bio);
+@@ -4111,6 +4201,7 @@
+ #endif
+ 
+ 	cmd->start_time = jiffies;
++#endif
+ }
+ 
+ /* io */
+@@ -4132,11 +4223,19 @@
+ 	int tag = cmd->tag;
+ 
+ 	if (bio) {
+-#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
++#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0)))
++		if (bio_op(bio) != REQ_OP_DISCARD) {
++			ssd_end_io_acct(cmd);
++			if (!cmd->flag) {
++				pci_unmap_sg(dev->pdev, cmd->sgl, cmd->dma_nents, 
++					bio_data_dir(bio) == READ ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
++			}
++		}
++#elif (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
+ 		if (!(bio->bi_rw & REQ_DISCARD)) {
+ 			ssd_end_io_acct(cmd);
+ 			if (!cmd->flag) {
+-				pci_unmap_sg(dev->pdev, cmd->sgl, cmd->nsegs, 
++				pci_unmap_sg(dev->pdev, cmd->sgl, cmd->dma_nents, 
+ 					bio_data_dir(bio) == READ ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
+ 			}
+ 		}
+@@ -4144,7 +4243,7 @@
+ 		if (!bio_rw_flagged(bio, BIO_RW_DISCARD)) {
+ 			ssd_end_io_acct(cmd);
+ 			if (!cmd->flag) {
+-				pci_unmap_sg(dev->pdev, cmd->sgl, cmd->nsegs, 
++				pci_unmap_sg(dev->pdev, cmd->sgl, cmd->dma_nents, 
+ 					bio_data_dir(bio) == READ ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
+ 			}
+ 		}
+@@ -4152,7 +4251,7 @@
+ 		ssd_end_io_acct(cmd);
+ 
+ 		if (!cmd->flag) {
+-			pci_unmap_sg(dev->pdev, cmd->sgl, cmd->nsegs, 
++			pci_unmap_sg(dev->pdev, cmd->sgl, cmd->dma_nents, 
+ 				bio_data_dir(bio) == READ ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
+ 		}
+ #endif
+@@ -4207,8 +4306,23 @@
+ }
+ 
+ /* cmd timer */
++static void ssd_cmd_timeout(struct ssd_cmd *cmd);
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
++static void ssd_cmd_timeout_timer_fn(struct timer_list *t)
++{
++	struct ssd_cmd *cmd = from_timer(cmd, t, cmd_timer);
++	ssd_cmd_timeout(cmd);
++}
++#endif
++
+ static void ssd_cmd_add_timer(struct ssd_cmd *cmd, int timeout, void (*complt)(struct ssd_cmd *))
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
++	(void)complt;
++	timer_setup(&cmd->cmd_timer, ssd_cmd_timeout_timer_fn, 0);
++	cmd->cmd_timer.expires = jiffies + timeout;
++	add_timer(&cmd->cmd_timer);
++#else
+ 	init_timer(&cmd->cmd_timer);
+ 
+ 	cmd->cmd_timer.data = (unsigned long)cmd;
+@@ -4216,6 +4330,7 @@
+ 	cmd->cmd_timer.function = (void (*)(unsigned long)) complt;
+ 
+ 	add_timer(&cmd->cmd_timer);
++#endif
+ }
+ 
+ static int ssd_cmd_del_timer(struct ssd_cmd *cmd)
+@@ -4223,6 +4338,7 @@
+ 	return del_timer(&cmd->cmd_timer);
+ }
+ 
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0))
+ static void ssd_add_timer(struct timer_list *timer, int timeout, void (*complt)(void *), void *data)
+ {
+ 	init_timer(timer);
+@@ -4233,6 +4349,7 @@
+ 
+ 	add_timer(timer);
+ }
++#endif
+ 
+ static int ssd_del_timer(struct timer_list *timer)
+ {
+@@ -4505,7 +4622,8 @@
+ 	* for each segment in bio
+ 	*/
+ 	bio_for_each_segment(bvec, bio, iter) {
+-		if (!first && BIOVEC_PHYS_MERGEABLE(&bvprv, &bvec)) {
++		if (!first && BIOVEC_PHYS_MERGEABLE(&bvprv, &bvec) &&
++		    (sg->length + bvec.bv_len) <= (dev->hw_info.sg_max_sec << 9)) {
+ 			sg->length += bvec.bv_len;
+ 		} else {
+ 			if (unlikely(nsegs >= (int)dev->hw_info.cmd_max_sg)) {
+@@ -4551,8 +4669,12 @@
+ 
+ 	msg = (struct ssd_rw_msg *)cmd->msg;
+ 
+-#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
++#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0)))
++	if (bio_op(bio) == REQ_OP_DISCARD) {
++#elif (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
+ 	if (bio->bi_rw & REQ_DISCARD) {
++#endif
++#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
+ 		unsigned int length = bio_sectors(bio);
+ 
+ 		//printk(KERN_WARNING "%s: discard len %u, block %llu\n", dev->name, bio_sectors(bio), block);
+@@ -4666,8 +4788,12 @@
+ 
+ 	sgl = cmd->sgl;
+ 
+-#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
++#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0)))
++	if (bio_op(bio) == REQ_OP_DISCARD) {
++#elif (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
+ 	if (bio->bi_rw & REQ_DISCARD) {
++#endif
++#if (defined SSD_TRIM && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)))
+ 		unsigned int length = bio_sectors(bio);
+ 
+ 		//printk(KERN_WARNING "%s: discard len %u, block %llu\n", dev->name, bio_sectors(bio), block);
+@@ -4722,28 +4848,41 @@
+ 	}
+ #endif
+ 
+-	msg->nsegs = cmd->nsegs = ssd_bio_map_sg(dev, bio, sgl);
++	cmd->dma_nents = ssd_bio_map_sg(dev, bio, sgl);
+ 
+ 	//xx
+-	if (bio_data_dir(bio) == READ) {
+-		msg->fun = SSD_FUNC_READ;
+-		msg->flag = 0;
+-		pci_map_sg(dev->pdev, sgl, cmd->nsegs, PCI_DMA_FROMDEVICE);
+-	} else {
+-		msg->fun = SSD_FUNC_WRITE;
+-		msg->flag = dev->wmode;
+-		pci_map_sg(dev->pdev, sgl, cmd->nsegs, PCI_DMA_TODEVICE);
+-	}
++	{
++		int dma_nsegs;
++		int nr_sge = 0;
+ 
+-	sge = msg->sge;
+-	for (i=0; i<cmd->nsegs; i++) {
+-		sge->block = block;
+-		sge->length = sg_dma_len(sgl) >> 9;
+-		sge->buf = sg_dma_address(sgl);
++		if (bio_data_dir(bio) == READ) {
++			msg->fun = SSD_FUNC_READ;
++			msg->flag = 0;
++			dma_nsegs = pci_map_sg(dev->pdev, sgl, cmd->dma_nents, PCI_DMA_FROMDEVICE);
++		} else {
++			msg->fun = SSD_FUNC_WRITE;
++			msg->flag = dev->wmode;
++			dma_nsegs = pci_map_sg(dev->pdev, sgl, cmd->dma_nents, PCI_DMA_TODEVICE);
++		}
+ 
+-		block += sge->length;
+-		sgl++;
+-		sge++;
++		sge = msg->sge;
++		for (i = 0; i < dma_nsegs; i++, sgl++) {
++			unsigned int sec_left = sg_dma_len(sgl) >> 9;
++			dma_addr_t dma_addr = sg_dma_address(sgl);
++			while (sec_left > 0 && nr_sge < (int)dev->hw_info.cmd_max_sg) {
++				unsigned int chunk = (sec_left > dev->hw_info.sg_max_sec) ? dev->hw_info.sg_max_sec : sec_left;
++				sge->block = block;
++				sge->length = chunk;
++				sge->buf = dma_addr;
++
++				block += chunk;
++				dma_addr += ((dma_addr_t)chunk << 9);
++				sec_left -= chunk;
++				sge++;
++				nr_sge++;
++			}
++		}
++		msg->nsegs = cmd->nsegs = nr_sge;
+ 	}
+ 
+ 	msg->tag = tag;
+@@ -5949,7 +6088,14 @@
+ 	/* io stat */
+ 	smart->io_stat.run_time += run_time;
+ 
+-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,27))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,11,0))
++	(void)part;
++	(void)cpu;
++	smart->io_stat.nr_read += part_stat_read(dev->gd->part0, ios[STAT_READ]);
++	smart->io_stat.nr_write += part_stat_read(dev->gd->part0, ios[STAT_WRITE]);
++	smart->io_stat.rsectors += part_stat_read(dev->gd->part0, sectors[STAT_READ]);
++	smart->io_stat.wsectors += part_stat_read(dev->gd->part0, sectors[STAT_WRITE]);
++#elif (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,27))
+ 	cpu = part_stat_lock();
+ 	part = &dev->gd->part0;
+ 	part_round_stats(cpu, part);
+@@ -6528,6 +6674,14 @@
+ 	}
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
++static void ssd_bm_routine_start(struct timer_list *t)
++{
++	struct ssd_device *dev = from_timer(dev, t, bm_timer);
++	if (!dev) {
++		return;
++	}
++#else
+ static void ssd_bm_routine_start(void *data)
+ {
+ 	struct ssd_device *dev;
+@@ -6536,6 +6690,7 @@
+ 		return;
+ 	}
+ 	dev = data;
++#endif
+ 
+ 	if (test_bit(SSD_INIT_WORKQ, &dev->state)) {
+ 		if (dev->protocol_info.ver < SSD_PROTOCOL_V3_2) {
+@@ -8192,6 +8347,11 @@
+ #endif
+ 		goto out;
+ 	}
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
++	if (unlikely(bio->bi_opf & REQ_FUA)) {
++		bio_endio(bio, -EOPNOTSUPP);
++		goto out;
++	}
+ #else
+ 	//xx
+ 	if (unlikely(bio->bi_rw & REQ_FUA)) {
+@@ -8287,6 +8447,16 @@
+ #endif
+ 		goto out;
+ 	}
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
++	if (unlikely(bio->bi_opf & REQ_FUA)) {
++		bio_endio(bio, -EOPNOTSUPP);
++		goto out;
++	}
++
++	if (unlikely(((bio->bi_opf & REQ_PREFLUSH) || (bio_op(bio) == REQ_OP_FLUSH)) && !bio_sectors(bio))) {
++		bio_endio(bio, 0);
++		goto out;
++	}
+ #else
+ 	//xx
+ 	if (unlikely(bio->bi_rw & REQ_FUA)) {
+@@ -10022,7 +10192,20 @@
+ }
+ 
+ /* block device */
+-#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0))
++static int ssd_block_open(struct gendisk *disk, blk_mode_t mode)
++{
++	struct ssd_device *dev;
++
++	if (!disk) {
++		return -EINVAL;
++	}
++
++	dev = disk->private_data;
++	if (!dev) {
++		return -EINVAL;
++	}
++#elif (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27))
+ static int ssd_block_open(struct inode *inode, struct file *filp)
+ {
+ 	struct ssd_device *dev;
+@@ -10061,7 +10244,20 @@
+ 	return 0;
+ }
+ 
+-#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0))
++static void ssd_block_release(struct gendisk *disk)
++{
++	struct ssd_device *dev;
++
++	if (!disk) {
++		return;
++	}
++
++	dev = disk->private_data;
++	if (!dev) {
++		return;
++	}
++#elif (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27))
+ static int ssd_block_release(struct inode *inode, struct file *filp)
+ {
+ 	struct ssd_device *dev;
+@@ -10112,8 +10308,21 @@
+ #endif
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0))
++static void ssd_submit_bio_ops(struct bio *bio)
++{
++	bio = bio_split_to_limits(bio);
++	if (!bio)
++		return;
++	ssd_make_request(bio->bi_bdev->bd_disk->queue, bio);
++}
++#endif
++
+ static struct block_device_operations ssd_fops = {
+ 	.owner		= THIS_MODULE,
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0))
++	.submit_bio	= ssd_submit_bio_ops,
++#endif
+ 	.open		= ssd_block_open,
+ 	.release	= ssd_block_release,
+ 	.ioctl		= ssd_block_ioctl,
+@@ -10128,17 +10337,21 @@
+ 	if (dev->protocol_info.ver <= SSD_PROTOCOL_V3) {
+ 		return;
+ 	}
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0))
+ 	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, dev->rq);
++#endif
+ 
+ #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,33)) || (defined RHEL_MAJOR && RHEL_MAJOR >= 6))
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0))
+ 	dev->rq->limits.discard_zeroes_data = 1;
++#endif
+ 	dev->rq->limits.discard_alignment = 4096;
+ 	dev->rq->limits.discard_granularity = 4096;
+ #endif
+ 	if (dev->protocol_info.ver < SSD_PROTOCOL_V3_2_4) {
+-		dev->rq->limits.max_discard_sectors = dev->hw_info.sg_max_sec;
++		blk_queue_max_discard_sectors(dev->rq, dev->hw_info.sg_max_sec);
+ 	} else {
+-		dev->rq->limits.max_discard_sectors = (dev->hw_info.sg_max_sec) * (dev->hw_info.cmd_max_sg);
++		blk_queue_max_discard_sectors(dev->rq, (dev->hw_info.sg_max_sec) * (dev->hw_info.cmd_max_sg));
+ 	}
+ #endif
+ }
+@@ -10147,12 +10360,22 @@
+ {
+ 	ssd_wait_io(dev);
+ 
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,14,0))
+ 	blk_cleanup_queue(dev->rq);
++#endif
+ 	dev->rq = NULL;
+ }
+ 
+ static int ssd_init_queue(struct ssd_device *dev)
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,0))
++	dev->gd = blk_alloc_disk(dev_to_node(&dev->pdev->dev));
++	if (!dev->gd) {
++		hio_warn("%s: alloc disk/queue: failed\n ", dev->name);
++		goto out_init_queue;
++	}
++	dev->rq = dev->gd->queue;
++#else
+ 	dev->rq = blk_alloc_queue(GFP_KERNEL);
+ 	if (dev->rq == NULL) {
+ 		hio_warn("%s: alloc queue: failed\n ", dev->name);
+@@ -10161,6 +10384,7 @@
+ 
+ 	/* must be first */
+ 	blk_queue_make_request(dev->rq, ssd_make_request);
++#endif
+ 
+ #if ((LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34)) && !(defined RHEL_MAJOR && RHEL_MAJOR == 6))
+ 	blk_queue_max_hw_segments(dev->rq, dev->hw_info.cmd_max_sg);
+@@ -10178,8 +10402,11 @@
+ #endif
+ 	/* not work for make_request based drivers(bio) */
+ 	blk_queue_max_segment_size(dev->rq, dev->hw_info.sg_max_sec << 9);
++	dma_set_max_seg_size(&dev->pdev->dev, dev->hw_info.sg_max_sec << 9);
+ 
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0))
+ 	blk_queue_bounce_limit(dev->rq, BLK_BOUNCE_HIGH);
++#endif
+ 
+ 	dev->rq->queuedata = dev;
+ 
+@@ -10187,7 +10414,10 @@
+ 	blk_queue_issue_flush_fn(dev->rq, ssd_issue_flush_fn);
+ #endif
+ 
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
++	blk_queue_flag_set(QUEUE_FLAG_NONROT, dev->rq);
++	blk_queue_flag_set(QUEUE_FLAG_IO_STAT, dev->rq);
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28))
+ 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, dev->rq);
+ #endif
+ 
+@@ -10206,6 +10436,27 @@
+ 
+ static int ssd_init_blkdev(struct ssd_device *dev)
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,0))
++	int ret;
++	if (!dev->gd) {
++		hio_warn("%s: gendisk not allocated\n", dev->name);
++		goto out_alloc_gd;
++	}
++	dev->gd->major = dev->major;
++	dev->gd->first_minor = dev->idx * ssd_minors;
++	dev->gd->minors = ssd_minors;
++	dev->gd->fops = &ssd_fops;
++	dev->gd->private_data = dev;
++	snprintf(dev->gd->disk_name, sizeof(dev->gd->disk_name), "%s", dev->name);
++
++	set_capacity(dev->gd, dev->hw_info.size >> 9);
++
++	ret = device_add_disk(&dev->pdev->dev, dev->gd, NULL);
++	if (ret) {
++		hio_warn("%s: device_add_disk fail: %d\n", dev->name, ret);
++		goto out_alloc_gd;
++	}
++#else
+ 	if (dev->gd) {
+ 		put_disk(dev->gd);
+ 	}
+@@ -10226,6 +10477,7 @@
+ 	set_capacity(dev->gd, dev->hw_info.size >> 9);
+ 
+ 	add_disk(dev->gd);
++#endif
+ 
+ 	return 0;
+ 
+@@ -11411,6 +11663,15 @@
+ 		for (i=0; i<dev->nr_queue; i++) {
+ 			dev->entry[i].entry = i;
+ 		}
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,12,0))
++		ret = pci_enable_msix_range(dev->pdev, dev->entry, 1, dev->nr_queue);
++		if (ret < 0) {
++			hio_warn("%s: can not enable msix\n", dev->name);
++			ssd_set_alarm(dev);
++			goto out;
++		}
++		dev->nr_queue = ret;
++#else
+ 		for (;;) {
+ 			ret = pci_enable_msix(dev->pdev, dev->entry, dev->nr_queue);
+ 			if (ret == 0) {
+@@ -11424,6 +11685,7 @@
+ 				goto out;
+ 			}
+ 		}
++#endif
+ 
+ #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)) || (defined RHEL_MAJOR && RHEL_MAJOR == 6))
+ 		mask = (dev_to_node(&dev->pdev->dev) == -1) ? cpu_online_mask : cpumask_of_node(dev_to_node(&dev->pdev->dev));
+@@ -11675,6 +11937,14 @@
+ 	}
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
++static void ssd_routine_start(struct timer_list *t)
++{
++	struct ssd_device *dev = from_timer(dev, t, routine_timer);
++	if (!dev) {
++		return;
++	}
++#else
+ static void ssd_routine_start(void *data)
+ {
+ 	struct ssd_device *dev;
+@@ -11683,6 +11953,7 @@
+ 		return;
+ 	}
+ 	dev = data;
++#endif
+ 
+ 	dev->routine_tick++;
+ 
+@@ -11742,11 +12013,19 @@
+ 	/* initial log */
+ 	ssd_initial_log(dev);
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
++	timer_setup(&dev->bm_timer, ssd_bm_routine_start, 0);
++	mod_timer(&dev->bm_timer, jiffies + msecs_to_jiffies(SSD_BM_CAP_LEARNING_DELAY));
++
++	timer_setup(&dev->routine_timer, ssd_routine_start, 0);
++	mod_timer(&dev->routine_timer, jiffies + msecs_to_jiffies(SSD_ROUTINE_INTERVAL));
++#else
+ 	/* schedule bm routine */
+ 	ssd_add_timer(&dev->bm_timer, msecs_to_jiffies(SSD_BM_CAP_LEARNING_DELAY), ssd_bm_routine_start, dev);
+ 
+ 	/* schedule routine */
+ 	ssd_add_timer(&dev->routine_timer, msecs_to_jiffies(SSD_ROUTINE_INTERVAL), ssd_routine_start, dev);
++#endif
+ 
+ 	return 0;
+ }
+@@ -12011,6 +12290,10 @@
+ 	}
+ 
+ init_next1:
++	if (dev->protocol_info.ver >= SSD_PROTOCOL_V3_2) {
++		ssd_reg32_write(dev->ctrlp + SSD_FULL_RESET_REG, SSD_RESET_FULL);
++		msleep(1000);
++	}
+ 	ret = ssd_init_hw_info(dev);
+ 	if (ret) {
+ 		hio_err("%s: init hardware info failed\n", dev->name);
+@@ -12326,6 +12609,8 @@
+ 
+ #if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,12))
+ 	ssd_class = class_simple_create(THIS_MODULE, SSD_DEV_NAME);
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(6,4,0))
++	ssd_class = class_create(SSD_DEV_NAME);
+ #else
+ 	ssd_class = class_create(THIS_MODULE, SSD_DEV_NAME);
+ #endif
