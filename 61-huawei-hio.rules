@@ -1,0 +1,2 @@
+ACTION!="remove", SUBSYSTEM=="block", KERNEL=="hio*", IMPORT{builtin}="blkid"
+ACTION!="remove", SUBSYSTEM=="block", KERNEL=="hio*", ENV{ID_FS_USAGE}=="filesystem|other|crypto", ENV{ID_FS_UUID_ENC}=="?*", SYMLINK+="disk/by-uuid/$env{ID_FS_UUID_ENC}"

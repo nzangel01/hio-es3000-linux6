@@ -37,3 +37,15 @@ Ubuntu 18.04 / 20.04 kernels (4.15 / 5.4) ship a prebuilt `hio.ko` in `linux-mod
 
 ## License
 GPL-2.0 (see `COPYING`), same as the upstream driver. No warranty. Not affiliated with Huawei or Canonical.
+
+## Install on Ubuntu 24.04 (what worked on the tested box)
+```sh
+sudo install -D hio.ko /lib/modules/$(uname -r)/extra/hio.ko && sudo depmod -a
+echo hio | sudo tee /etc/modules-load.d/hio.conf
+sudo cp 61-huawei-hio.rules /etc/udev/rules.d/     # stock 60-persistent-storage.rules skips hio*, so no /dev/disk/by-uuid link
+# /etc/fstab (nofail so a missing card cannot hang boot):
+# UUID=<fs-uuid> /mnt/huawei ext4 defaults,nofail,x-systemd.device-timeout=30 0 2
+```
+Module parameters (e.g. `wmode`) are declared with perm 0, so they do **not** appear in `/sys/module/hio/parameters/`;
+check with `modinfo hio` and set via `/etc/modprobe.d/hio.conf` (`options hio wmode=2` = write-through).
+`hiowarn: get bm operationstatus failed` means the backup-capacitor status chip did not answer; treat the card as having no power-loss protection.
