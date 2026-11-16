@@ -1,6 +1,6 @@
 # hio-es3000-linux6 — Huawei ES3000 (`hio`) PCIe SSD driver, port to Linux 6.8
 
-**Status: works on one tested card; not soaked. Keep backups.**
+**Status: works on one tested card (8 h soak, 0 data mismatches; needs airflow). Power-loss safety untested. Keep backups.**
 
 Huawei's out-of-tree block driver `hio` (Tecal ES3000 PCIe SSD) was last maintained for Linux 4.x.
 This repo is an attempt to make it build and run on a modern kernel (target: Ubuntu 22.04 HWE, `6.8.0-*-generic`).
@@ -18,7 +18,10 @@ This repo is an attempt to make it build and run on a modern kernel (target: Ubu
 | ext4 format + mount, direct I/O | yes (reported: ~1.5 GB/s read, ~1.3 GB/s write 1M; 4K QD1 ~6k IOPS) |
 | IOMMU (Intel DMAR) fix: use coalesced `dma_nsegs` from `pci_map_sg` | included |
 | Full reset (`SSD_FULL_RESET_REG` 0x1B0 = 0x5A, protocol V3.1.1+) at load | included; the card may need a PCIe reset / power cycle if left in a bad state by an older build |
-| Survives reboot / long soak | not yet verified |
+| Survives reboot | yes (auto-load, udev rule, fstab mount; random 1 GiB file SHA-1 intact) |
+| 8 h soak (`hio_soak.sh`: 154 rounds x 32 GiB write + drop caches + read-back byte compare) | **0 mismatches**, no `hioerr`, no DMAR/IOMMU fault, no I/O error |
+| Thermal | needs airflow: without a fan the card reported `Over temperature` after ~3 min of sustained writes and throttled to ~2-6 MB/s; with a weak fan blowing on it, back to normal (~400 MB/s with this test's data generator) and stable for the rest of the run. Data stayed correct even while throttled |
+| Power-loss behaviour | **not tested**; `get bm operationstatus failed` is logged, so assume no power-loss protection. `options hio wmode=2` (write-through) is the conservative choice |
 
 Writing to a card through an unverified driver can hang the machine. Test read-only first.
 
