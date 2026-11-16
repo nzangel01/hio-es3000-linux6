@@ -52,3 +52,9 @@ sudo cp 61-huawei-hio.rules /etc/udev/rules.d/     # stock 60-persistent-storage
 Module parameters (e.g. `wmode`) are declared with perm 0, so they do **not** appear in `/sys/module/hio/parameters/`;
 check with `modinfo hio` and set via `/etc/modprobe.d/hio.conf` (`options hio wmode=2` = write-through).
 `hiowarn: get bm operationstatus failed` means the backup-capacitor status chip did not answer; treat the card as having no power-loss protection.
+
+## Checking the card
+`sudo cat /proc/hio/info` prints driver/firmware/PCB versions only (tested card: driver 2.1.0.23, 803 GB, bridge and controller FW 326).
+It does not show the write mode or temperature, so `options hio wmode=2` cannot be confirmed from sysfs/procfs;
+temperature problems show up in the kernel log (`hiowarn: ... Over temperature` / `Temperature is OK`).
+`hiowarn: some fault found in the history info` appears at every load on the tested card and had no visible effect in the 8 h soak.
