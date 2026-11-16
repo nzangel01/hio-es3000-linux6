@@ -39,6 +39,17 @@ The kernel's own compiler must match (Ubuntu 6.8 HWE kernels are built with gcc-
 Ubuntu 18.04 / 20.04 kernels (4.15 / 5.4) ship a prebuilt `hio.ko` in `linux-modules-extra`
 (`kernel/ubuntu/hio/hio.ko`). The 20.04.6 live-server ISO also contains it.
 
+## Rebuild automatically on kernel updates (DKMS)
+Out-of-tree modules are per kernel: after an Ubuntu kernel update `hio.ko` is gone until rebuilt
+(seen on the tested box: 6.8.0-138 -> 6.8.0-149). No per-kernel releases are needed, the source builds against whatever kernel headers are installed.
+```sh
+sudo apt install dkms linux-headers-$(uname -r)
+sudo cp -r . /usr/src/hio-2.1.0.23-linux6
+sudo dkms add -m hio -v 2.1.0.23-linux6
+sudo dkms install -m hio -v 2.1.0.23-linux6
+```
+Status: `dkms.conf` is untested until the result is added here.
+
 ## License
 GPL-2.0 (see `COPYING`), same as the upstream driver. No warranty. Not affiliated with Huawei or Canonical.
 
