@@ -48,7 +48,8 @@ sudo cp -r . /usr/src/hio-2.1.0.23-linux6
 sudo dkms add -m hio -v 2.1.0.23-linux6
 sudo dkms install -m hio -v 2.1.0.23-linux6
 ```
-Status: `dkms.conf` is untested until the result is added here.
+Status: builds and registers on 6.8.0-149-generic (dkms 2.8.7, Ubuntu 22.04 HWE). Not yet exercised by a real kernel update.
+If you already installed `hio.ko` by hand into `/lib/modules/<ver>/extra/`, DKMS refuses to replace it (same module version); delete the hand-built file or use `dkms install --force`.
 
 ## License
 GPL-2.0 (see `COPYING`), same as the upstream driver. No warranty. Not affiliated with Huawei or Canonical.
